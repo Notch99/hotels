@@ -1,0 +1,122 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // This security rules file assumes the following data structures:
+    //
+    // Collection: users
+    // Document ID: {userId} (matches Firebase Auth UID)
+    // Fields:
+    //   - name: string (required, 1..100 chars) - User's full name
+    //   - phone: string (required, 1..30 chars) - User's phone number
+    //   - email: string (required, 1..254 chars, valid email) - User's email address
+    //
+    // Collection: hotels
+    // Document ID: {hotelId}
+    // Authenticated users can read and create (e.g., initial seeding); updates/deletes disallowed.
+    // Fields:
+    //   - name: string (required, 1..150 chars) - Hotel name
+    //   - address: string (required, 1..250 chars) - Hotel address
+    //   - price: number (required, > 0) - Nightly rate
+    //   - services: list (required, max 30 items) - Available hotel services
+    //   - image: string (required, 0..500 chars) - Hotel image URL
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if the authenticated user owns the document
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Validate required fields exist
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    // Validate that the document contains only the allowed fields
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // Validate string length bounds
+    function validStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+        request.resource.data[field].size() >= minLen &&
+        request.resource.data[field].size() <= maxLen;
+    }
+
+    // Validate email format and length
+    function isValidEmail(email) {
+      return email is string &&
+        email.size() > 0 &&
+        email.size() <= 254 &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    // Validate that a list is a list and enforces size limits
+    function isValidList(list, maxSize) {
+      return list is list && list.size() <= maxSize;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return hasRequiredFields(['name', 'phone', 'email']) &&
+        hasOnlyAllowedFields(['name', 'phone', 'email']) &&
+        validStringLength('name', 1, 100) &&
+        validStringLength('phone', 1, 30) &&
+        validStringLength('email', 1, 254) &&
+        isValidEmail(data.email);
+    }
+
+    function isValidHotel(data) {
+      return hasRequiredFields(['name', 'address', 'price', 'services', 'image']) &&
+        hasOnlyAllowedFields(['name', 'address', 'price', 'services', 'image']) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 150 &&
+        data.address is string && data.address.size() >= 1 && data.address.size() <= 250 &&
+        (data.price is int || data.price is float) && data.price > 0 &&
+        isValidList(data.services, 30) &&
+        data.image is string && data.image.size() >= 0 && data.image.size() <= 500;
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // Users: strict owner-only read, create, and update with schema validation
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data);
+      allow delete: if false;
+    }
+
+    // Hotels: authenticated users can read and create valid hotel documents; updates/deletes disallowed
+    match /hotels/{hotelId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidHotel(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    // Default deny all other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
